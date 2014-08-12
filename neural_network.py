@@ -15,6 +15,8 @@ class NeuralNetwork:
     
     init_theta = {}
     theta = {}
+    gradient_diff = []
+    y_thresh = 0.5
 
     def __init__(self, X, y=None, multi_class=False, options=None):
         
@@ -22,6 +24,8 @@ class NeuralNetwork:
                     'num_layers': 3,
                     'hidden_layer_size': 10,
                     'maxiter': 100,
+                    'training_split': 1.,
+                    'display': True,
                     'debug': False,
                     'gradient_check': False,
                     'randomize': True}
@@ -32,24 +36,29 @@ class NeuralNetwork:
                 if key in _options.keys():
                     _options[key] = options[key]
 
-        training_split = int(.75 * X.shape[0])        
+        training_split = int(float(_options['training_split']) * X.shape[0])
         
+        # determine if there's a test set
+        self.is_test_set = not training_split == X.shape[0]
+
         # init useful variables 
         self.X = X[:training_split, :]
         self.X_test = X[training_split:, :]
         if y is not None:
+            self.num_labels = len(np.unique(y))
             self.y = y[:training_split]
             self.y_test = y[training_split:]
         self.m = int(self.X.shape[0])
         self.n = int(self.X.shape[1])
-        self.input_layer_size  = int(self.X.shape[1])
+        self.input_layer_size = int(self.X.shape[1])
         self.iter = 0
         
         # init options
         self.lamb = float(_options['lamb'])
         self.num_layers = int(_options['num_layers'])
         self.hidden_layer_size = int(_options['hidden_layer_size'])
-        self.maxiter = int(_options['maxiter']) 
+        self.maxiter = int(_options['maxiter'])
+        self.display = bool(_options['display']) 
         self.debug = bool(_options['debug'])
         self.gradient_check = bool(_options['gradient_check'])
         self.randomize = bool(_options['randomize'])
@@ -121,22 +130,15 @@ class NeuralNetwork:
         """
         
         grad_approx = np.zeros((len(theta), ))
-        #perturb = np.zeros((len(theta), ))
         
-        epsilon = math.e**-6
-        #epsilon = 5000.
+        epsilon = 10**-4
         
         for i in range(len(theta)):
             
-
             theta_plus = theta.copy()
-            #print theta_plus
             theta_plus[i]  = theta_plus[i] + epsilon
-            #print theta_plus
 
-            
             a_plus, z = self.feed_forward(None, theta_plus)
-            #print a_plus[4]
             J_plus = self.calculate_cost(a_plus, self.y_matrix)
 
             theta_minus    = theta.copy()
@@ -145,69 +147,93 @@ class NeuralNetwork:
             a_minus, z = self.feed_forward(None, theta_minus)
             J_minus = self.calculate_cost(a_minus, self.y_matrix)
             
-            #print a_plus, a_minus
-            print J_plus, J_minus
-            
             grad_approx[i] = (J_plus - J_minus) / (2. * epsilon)
-            
-            #print grad_approx
             
         return grad_approx
         
-    def gradient_check(self, theta_grad_1, theta_grad_2):
-        print theta_grad_1, theta_grad_2
-        diff = theta_grad_1 - theta_grad_2
-        return np.sum(diff)
+    def run_gradient_check(self, theta_grad_1, theta_grad_2): 
+        """
+        Computes difference between numerically calculated gradients and
+        back prop gradients and print results to console.
+        
+        Appends total difference to 'gradient_diff' list.
+        
+        Params:
+        theta_grad_1: Numerical Gradients (in vector format)
+        theta_grad_2: Back Prop Gradients (in vector format)
+        
+        Returns None
+        """
+        if self.display:
+            print 'Numerical Grads'.ljust(25) + \
+                  'Back Prop Grads'.ljust(25) + \
+                  'Difference'.ljust(25)
+                  
+            for idx in range(len(theta_grad_1)):
+                diff = theta_grad_1[idx] - theta_grad_2[idx]
+                print '%+010.10f'.ljust(20) %theta_grad_1[idx], \
+                      '%+010.10f'.ljust(20) %theta_grad_2[idx], \
+                      '%+010.10f'.ljust(20) %diff
+            
+            # Evaluate the norm of the difference between two solutions.
+            diff = np.linalg.norm(theta_grad_1 - theta_grad_2) / \
+                   np.linalg.norm(theta_grad_1 + theta_grad_2)
+    
+            print '--'
+            print 'Total Difference: %+010.10f'.ljust(25) % (diff), \
+                  '('+str(diff)+')'
+              
+        self.gradient_diff.append(diff)
 
     def callback(self, xk):
         
         self.iter += 1
-        #self.xk = xk
+        self.xk = xk
         
-        # calculate new outputs for cost function
+        # calculate new outputs on TRAINING SET for cost function / evaluation
         a, z = self.feed_forward()      
         J = self.calculate_cost(a, self.y_matrix)
+        accuracy = self.predict(a, self.y)
         
-        # calculate F score on training set
-        #self.y_predict = self.predict(a)
-        #f = self.calc_f_score(self.y_predict, self.y)
+        # calculate new outputs on TEST SET for cost function / evaluation
+        if self.is_test_set:
+            a_test, z_test = self.feed_forward(self.X_test)   
+            J_test = self.calculate_cost(a_test, self.y_matrix_test, with_reg=False)
+            accuracy_test = self.predict(a_test, self.y_test)
         
-        # calculate F score on test set
-        a_test, z_test = self.feed_forward(self.X_test)   
-        J_test = self.calculate_cost(a_test, self.y_matrix_test, with_reg=False)
-        
-        #y_test_predict = self.predict(a_test)
-        #f_test = self.calc_f_score(y_test_predict, self.y_test)
-        
-        """ Gradient Checking """
+        # Gradient checking
         if self.gradient_check:
         
-            # gradient using 'gradient checking'
+            # numerical gradient using 'gradient checking'
             grad_approx_1 = self.init_gradient_check(xk)
             
             # gradient using 'back prop'
             grad_approx_2 = self.back_prop(a, z)
             grad_approx_2 = self.slim(grad_approx_2)
             
-            print self.gradient_check(grad_approx_1, grad_approx_2)
+            self.run_gradient_check(grad_approx_1, grad_approx_2)    
         
         if self.is_multiclass:
             
-            accuracy = self.predict(a, self.y)
+            print '- Iteration: %d / %d' % (self.iter, self.maxiter)
+            print '/ Cost: %f' % J
+            print '\ Accuracy: %04.2f %%' % accuracy
             
-            accuracy_test = self.predict(a_test, self.y_test)
-
-            
-            print '- Iteration: ' + str(self.iter) + ' / ' + str(self.maxiter)
-            print '/ Cost: ' + str(J)
-            print '/ Cost of Test: ' + str(J_test)
-            print '/ Accuracy: ' +  str(accuracy)
-            print '\ Accuracy of Test: ' +  str(accuracy_test)
+            if self.is_test_set:
+                print '/ Cost of Test: %f' % J_test
+                print '\ Accuracy of Test: %f' % accuracy_test
             print '------------------------------------' 
                   
         else:
             
-            print '- Iteration: ' + str(self.iter) + ' / ' + str(self.maxiter)
+            # calculate F score on training set
+            f = self.calc_f_score(self.y_predict, self.y)
+            
+            # calculate F score on test set (if present)
+            if self.is_test_set:
+                f_test = self.calc_f_score(accuracy_test, self.y_test)
+                
+            print '- Iteration: %d / %d' % (self.iter, self.maxiter)
             print '- Cost: ' + str(J)
             print '- Cost of TEST: ' + str(J_test)
             print '/ Precision: ' + str(f['precision'])
@@ -219,27 +245,34 @@ class NeuralNetwork:
             print '------------------------------------'  
     
     def predict(self, a, y=None):
+        """
+        If is_multiclass: extracts the index of the maximum output value
+        from the Network and returns the percentage of correct values.
+        
+        Else: returns y=1 based on the output values i from the Network
+        over y_thresh.
+        
+        Params:
+        a: dict of output values for each layer.
+        y: y values to check output values against.
+        """
         
         if y == None: y = self.y
         
         if self.is_multiclass:
-        
+                
             # returns the index of the maximum prop output
-            #return a[self.num_layers].argmax(axis=0)
             y_match = y[y == a[self.num_layers].argmax(axis=0)]
-            
-            return (len(y_match) / float(len(y))) * 100.
             
         else:
             
-            y = a[self.num_layers]
+            y_predict = a[self.num_layers]
+            y_predict[y_predict >= self.y_thresh] = 1
+            y_predict[y_predict < self.y_thresh] = 0
             
-            THRESHOLD = .4
+            y_match = y[y == y_predict]
             
-            y[y >= THRESHOLD] = 1
-            y[y < THRESHOLD] = 0
-            
-            return y
+        return (len(y_match) / float(len(y))) * 100.
         
     def calc_f_score(self, y_test, y):
         """
@@ -275,7 +308,7 @@ class NeuralNetwork:
                                                       self.hidden_layer_size)                                        
 
 
-    def init_rand_theta(self, l_in, l_out, epsilon_init=0.12):
+    def init_rand_theta(self, l_in, l_out, epsilon_init=None):
         """
         Initialize random weights for neural networt,
         l_in + 1 for initializing theta for handling 'bias' feature.
@@ -286,6 +319,8 @@ class NeuralNetwork:
         
         Returns matrix (ndarray) of size l_out x l_in + 1
         """
+        if epsilon_init is None:
+            epsilon_init = self.calc_epsilon(l_in, l_out)
         t = np.zeros((l_out, l_in + 1 ))       
         t = np.random.random((l_out, l_in + 1 )) * (2 * epsilon_init) - epsilon_init    
         return t
@@ -380,7 +415,17 @@ class NeuralNetwork:
         return a, z
 
     def back_prop(self, a, z):
-         
+        """
+        Computes gradient steps via 'back propogation' algorithm.
+        
+        Params:
+        a: dict of output values for each layer l in network
+        z: dict of 'unactivated' values for each layer l in network
+        
+        Returns:
+        theta_grad: dict of gradient steps for theta.
+        """
+        
         delta = {}
         theta_grad = {}
         
@@ -406,7 +451,8 @@ class NeuralNetwork:
     def calculate_cost(self, a, y_matrix, with_reg=True):
         
         # calculate cost
-        J = ( -y_matrix.T * np.log(a[self.num_layers]) ) - ( (1 - y_matrix.T) * np.log(1 - a[self.num_layers]) )
+        J =   ( -y_matrix.T * np.log(a[self.num_layers]) ) \
+            - ( (1 - y_matrix.T) * np.log(1 - a[self.num_layers]) )
        
         # np.sum sums the columns (total cost for each training set)
         J = (sum(np.sum(J, axis=0))) / self.m
@@ -415,7 +461,7 @@ class NeuralNetwork:
             # add regularization
             reg = self.regularize_cost()
         else:
-            reg = 0       
+            reg = 0.      
         
         return J + reg
              
@@ -464,7 +510,10 @@ class NeuralNetwork:
         return y
     
     def create_matrix(self, y):
-        num_labels = len(np.unique(y))
+        if self.num_labels is None:
+            num_labels = len(np.unique(y))
+        else:
+            num_labels = self.num_labels
         y_matrix = np.zeros((len(y), num_labels))
         for i in range(len(y)):        
             y_matrix[i, y[i]] = 1        
@@ -478,7 +527,9 @@ class NeuralNetwork:
         
     def set_theta(self, theta):
         self.theta = theta
-        
+    
+    def calc_epsilon(self, l_in, l_out):
+        return math.sqrt(6) / math.sqrt(l_in + l_out)
 
 
 
